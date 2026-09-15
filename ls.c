@@ -245,12 +245,49 @@ void mainCRTStartup(void) {
     else {
         SIZE_T count;
         GlobPath *paths = glob_operands(argc, argv, &count);
+        Entry *files = 0, *filetail = 0, *dirs = 0, *dirtail = 0;
         int seen = 0;
         while (paths) {
             GlobPath *next = paths->next;
-            if (seen++) put('\n');
-            list(paths->value, count > 1 || recursive);
+            WIN32_FILE_ATTRIBUTE_DATA info;
+            WIN32_FIND_DATAW data;
+            if (!GetFileAttributesExW(paths->value, GetFileExInfoStandard, &info))
+                error(paths->value, GetLastError());
+            else {
+                Entry *e;
+                int contents;
+                data.dwReserved0 = 0;
+                if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                    HANDLE search = FindFirstFileW(paths->value, &data);
+                    if (search != INVALID_HANDLE_VALUE) FindClose(search);
+                }
+                data.dwFileAttributes = info.dwFileAttributes;
+                data.ftLastWriteTime = info.ftLastWriteTime;
+                data.nFileSizeHigh = info.nFileSizeHigh; data.nFileSizeLow = info.nFileSizeLow;
+                e = entry(&data, paths->value);
+                contents = !directory && (e->attributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    !(detailed && (e->tag == IO_REPARSE_TAG_SYMLINK || e->tag == IO_REPARSE_TAG_MOUNT_POINT));
+                if (contents) {
+                    if (dirtail) dirtail->next = e; else dirs = e;
+                    dirtail = e;
+                } else {
+                    if (filetail) filetail->next = e; else files = e;
+                    filetail = e;
+                }
+            }
             HeapFree(heap, 0, paths); paths = next;
+        }
+        if (!unsorted) { files = sort(files); dirs = sort(dirs); }
+        while (files) {
+            Entry *next = files->next;
+            printentry(files, 0); seen = 1;
+            HeapFree(heap, 0, files); files = next;
+        }
+        while (dirs) {
+            Entry *next = dirs->next;
+            if (seen++) put('\n');
+            list(dirs->name, count > 1 || recursive);
+            HeapFree(heap, 0, dirs); dirs = next;
         }
     }
     flush(); HeapFree(heap, 0, storage); HeapFree(heap, 0, argv); ExitProcess(failed ? 1 : 0);

@@ -44,6 +44,23 @@ try {
     Assert ((Invoke-Ls '-S').Text -eq "beta`nalpha`n") 'Size sorting failed'
     Assert ((Invoke-Ls '-lrt').Text -match '(?s)2020-01-01 .*alpha\n.*2021-01-01 .*beta\n') 'Long reverse time sorting failed'
     Assert ((Invoke-Ls '-l1').Text -eq "alpha`nbeta`n") '-1 must override -l'
+    Assert ((Invoke-Ls '-rt b* a*').Text -eq "alpha`nbeta`n") 'Wildcard operands were not sorted oldest first'
+    Assert ((Invoke-Ls '-t a* b*').Text -eq "beta`nalpha`n") 'Wildcard operands were not sorted newest first'
+    Assert ((Invoke-Ls '-S alpha beta').Text -eq "beta`nalpha`n") 'File operands were not sorted by size'
+    Assert ((Invoke-Ls 'beta alpha').Text -eq "alpha`nbeta`n") 'File operands were not sorted by name'
+    Assert ((Invoke-Ls '-U beta alpha').Text -eq "beta`nalpha`n") '-U changed explicit operand order'
+    Assert ((Invoke-Ls '-lrt b* a*').Text -match '(?s)2020-01-01 .*alpha\n[^\n]*2021-01-01 .*beta\n') 'Long operand sorting or spacing failed'
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'raw\bi5') | Out-Null
+    foreach ($item in @(@('GBPCAD.db', '2026-09-14T21:43:00'), @('USDBRL.db', '2026-09-13T17:57:00'), @('tickstory-state.db', '2026-09-15T15:20:00'))) {
+        $path = Join-Path $fixture ('raw\bi5\' + $item[0])
+        [IO.File]::WriteAllText($path, '')
+        [IO.File]::SetLastWriteTime($path, [datetime]$item[1])
+    }
+    Assert ((Invoke-Ls '-rt raw\bi5\*.db').Text -eq "raw\bi5\USDBRL.db`nraw\bi5\GBPCAD.db`nraw\bi5\tickstory-state.db`n") 'Nested database glob was not sorted oldest first'
+    # Delete only the known fixture files and their now-empty directories.
+    foreach ($name in 'GBPCAD.db', 'USDBRL.db', 'tickstory-state.db') { [IO.File]::Delete((Join-Path $fixture ('raw\bi5\' + $name))) }
+    [IO.Directory]::Delete((Join-Path $fixture 'raw\bi5'))
+    [IO.Directory]::Delete((Join-Path $fixture 'raw'))
     [IO.File]::WriteAllText((Join-Path $fixture '.dot'), '')
     [IO.File]::WriteAllText((Join-Path $fixture 'hidden'), '')
     [IO.File]::SetAttributes((Join-Path $fixture 'hidden'), [IO.FileAttributes]::Hidden)

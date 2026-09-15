@@ -87,7 +87,10 @@ Flags can be combined; multiple file/directory operands and `--` are supported.
 
 The last of `-t`, `-S`, and `-U` wins. Sorting defaults to case-sensitive ordinal
 name order, with names breaking time/size ties. Each directory is sorted
-independently; operands retain command-line order.
+independently. File operands (including wildcard matches) are sorted together
+using the selected flags and printed without blank lines between entries.
+Directory contents follow, with directory operands also sorted by the selected
+flags. `-U` preserves operand order within each group.
 
 Long listings mark symbolic links and directory junctions with `l` and show
 `name -> target`, including dangling links. The size is the target text's UTF-8
