@@ -1,6 +1,7 @@
 #define PROGRAM_NAME "ls"
 #define FAILURE_CODE 2
 #include "tiny.h"
+#include "glob.h"
 
 /* No CRT: all storage, text conversion and I/O use dynamically linked Win32. */
 typedef struct Entry {
@@ -187,10 +188,14 @@ void mainCRTStartup(void) {
     }
     if (!operands) list(L".", recursive);
     else {
+        SIZE_T count;
+        GlobPath *paths = glob_operands(argc, argv, &count);
         int seen = 0;
-        for (int i = 1; i < argc; ++i) if (argv[i]) {
+        while (paths) {
+            GlobPath *next = paths->next;
             if (seen++) put('\n');
-            list(argv[i], operands > 1 || recursive);
+            list(paths->value, count > 1 || recursive);
+            HeapFree(heap, 0, paths); paths = next;
         }
     }
     flush(); HeapFree(heap, 0, storage); HeapFree(heap, 0, argv); ExitProcess(failed ? 1 : 0);

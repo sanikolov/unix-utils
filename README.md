@@ -15,8 +15,11 @@ Visual Studio or Build Tools with **Desktop development with C++** to build.
 .\build\ls.exe -R
 .\build\du.exe -sh .
 .\build\du.exe -h --max-depth=1 .
+.\build\du.exe -s */foo*
+.\build\ls.exe -lrt */*
 .\test.ps1
 .\test-du.ps1
+.\test-glob.ps1
 .\bench.ps1
 ```
 
@@ -30,6 +33,37 @@ runtime needs to be installed to run either executable.
 results against Git for Windows' GNU du 8.32. Use its `-Reference` parameter
 for another GNU executable. Tests create and clean up isolated temporary
 fixtures, including hard links, junctions, sparse files, and long paths.
+
+## Wildcard operands (both utilities)
+
+Both programs expand command-line file/directory operands themselves, so a
+shell that expands wildcards is not required. For example, `du.exe -s */foo*`
+summarizes each matching path, and `ls.exe -lrt */*` lists the expanded operands.
+
+- Supports `*`, `?`, and bracket sets/ranges such as `[abc]`, `[a-z]`, and
+  `[!a-z]`. Wildcards match one path component; `/` and `\` are separators.
+  Intermediate matches must be directories. A trailing separator selects
+  directories only. Directory links can be followed to resolve later components.
+- Matches within each operand are sorted in case-sensitive ordinal order;
+  the original order of separate operands is retained. A leading dot must be
+  matched by an explicit leading dot in that component. `.` and `..` are never
+  generated. Windows' hidden attribute alone does not exclude a glob match.
+  Listing flags such as `ls -a` do not change expansion rules.
+- Unmatched patterns are retained literally, as with default Bash behavior;
+  the utility reports an error if that path does not exist. Other operands
+  are still processed. Expanded names are not reinterpreted as options.
+- Only command-line operands expand: option values (including exclusion
+  patterns) and `du --files0-from` entries retain their existing meaning.
+  Shell quoting protects spaces but does not disable this built-in expansion.
+  Use `[[]` to match a literal `[`. Backslashes are path separators, not glob
+  escapes. Brace expansion, tilde expansion, POSIX character classes, and
+  recursive `**` are not implemented; `**` behaves like `*` in one component.
+
+Expansion uses iterative directory enumeration and stores only matching result
+paths plus traversal frames. Those names must be retained briefly to sort them
+and determine the expanded operand count (including for du's deduplication).
+Each result is freed after processing. `test-glob.ps1` compares expansion to
+equivalent explicit operand lists, including the examples above.
 
 ## ls.exe
 
@@ -86,8 +120,8 @@ Example release sizes with MSVC 14.51, x64:
 
 | Executable | Bytes |
 | --- | ---: |
-| `ls.exe` | 7,680 |
-| `du.exe` | 27,136 |
+| `ls.exe` | 10,752 |
+| `du.exe` | 29,696 |
 
 `bench.ps1` creates 10,000 empty files by default and samples each process's
 working set and private memory while draining its output. On the development
@@ -102,9 +136,9 @@ processes can be observed; it is not a speed benchmark.
 
 This is a compact subset, not full parity. Redirected output is UTF-8; console
 names use native Unicode output. Listings always use one entry per
-line, with no columns, color, glob expansion, or locale collation.
-Quote paths containing spaces. Wildcards are not operands; supply directory
-paths instead. Windows hidden attributes and dot-prefixed names are both hidden
+line, with no columns, color, or locale collation.
+Quote paths containing spaces. Wildcard operands follow the shared expansion
+rules above. Windows hidden attributes and dot-prefixed names are both hidden
 by default. Long listings use `YYYY-MM-DD HH:MM`; permissions are approximated
 from directory/read-only attributes, not ACLs. Link count is `1`, owner/group
 are `-`, directory sizes are Windows-reported, and there is no block `total`.
@@ -189,7 +223,8 @@ Patterns and NUL-separated file lists are UTF-8. Pattern files accept LF or CRLF
 - Native Windows paths, UNC paths, and extended paths are accepted. Du converts
   ordinary paths to extended absolute paths internally for traversal beyond 260
   characters. Output preserves operand spelling and uses `/` for child separators.
-  There is no shell glob expansion. File lists/output use UTF-8; console paths
+  Command-line wildcard operands follow the shared expansion rules above.
+  File lists/output use UTF-8; console paths
   use Unicode. Paths are emitted literally, so use `-0` for machine parsing.
 - Timestamps use Windows modification/access/change times, not creation time
   as a substitute for `ctime`. `full-iso` prints nine fractional digits, with

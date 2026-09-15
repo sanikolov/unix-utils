@@ -2,6 +2,7 @@
 #define FAILURE_CODE 1
 #define _WIN32_WINNT 0x0602
 #include "tiny.h"
+#include "glob.h"
 #include <winioctl.h>
 
 typedef struct { ULONGLONG volume, low, high; } Identity;
@@ -541,10 +542,18 @@ void mainCRTStartup(void) {
     if (inodes) { block = 1; suffix_output = 0; }
     if (human || grouping) prepare_numeric();
     if (time_kind) prepare_time();
-    hash_all = follow == 2 || operands > 1 || files_from != 0;
+    hash_all = follow == 2 || files_from != 0;
     if (files_from) input_file(files_from, 1);
     else if (!operands) walk(L".");
-    else for (int i = 1; i < argc; ++i) if (argv[i]) walk(argv[i]);
+    else {
+        SIZE_T count;
+        GlobPath *paths = glob_operands(argc, argv, &count);
+        if (count > 1) hash_all = 1;
+        while (paths) {
+            GlobPath *next = paths->next;
+            walk(paths->value); release(paths); paths = next;
+        }
+    }
     if (grand) print_total(&grand_total, L"total", 1);
     flush(); ExitProcess(failed ? 1 : 0);
 }
