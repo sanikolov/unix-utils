@@ -2,11 +2,13 @@
 #define FAILURE_CODE 2
 #include "tiny.h"
 #include "glob.h"
+#include <winioctl.h>
 
 /* No CRT: all storage, text conversion and I/O use dynamically linked Win32. */
 typedef struct Entry {
     struct Entry *next;
     DWORD attributes;
+    DWORD tag;
     FILETIME modified;
     ULONGLONG size;
     WCHAR name[1];
@@ -42,17 +44,61 @@ static Entry *sort(Entry *head) {
     return result;
 }
 
-static void printentry(const Entry *e) {
+/* Read the link itself, so dangling links and relative targets remain visible. */
+static WCHAR *linktarget(const WCHAR *path) {
+    HANDLE file = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             0, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, 0);
+    BYTE *data;
+    WCHAR *result = 0;
+    DWORD returned;
+    if (file == INVALID_HANDLE_VALUE) { error(path, GetLastError()); return 0; }
+    data = allocate(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+    if (!DeviceIoControl(file, FSCTL_GET_REPARSE_POINT, 0, 0, data, MAXIMUM_REPARSE_DATA_BUFFER_SIZE, &returned, 0))
+        error(path, GetLastError());
+    else {
+        DWORD base = returned >= 8 && *(DWORD *)data == IO_REPARSE_TAG_SYMLINK ? 20 : 16;
+        DWORD offset = returned >= 16 ? *(USHORT *)(data + 12) : 0;
+        DWORD length = returned >= 16 ? *(USHORT *)(data + 14) : 0;
+        int substitute = !length;
+        if (substitute && returned >= 16) { offset = *(USHORT *)(data + 8); length = *(USHORT *)(data + 10); }
+        if (returned < base || base + offset + length > returned || ((offset | length) & 1))
+            error(path, ERROR_INVALID_REPARSE_DATA);
+        else {
+            WCHAR *target = (WCHAR *)(data + base + offset);
+            if (substitute && length >= 8 && target[0] == L'\\' && target[1] == L'?' && target[2] == L'?' && target[3] == L'\\') {
+                target += 4; length -= 8;
+            }
+            result = allocate(length + sizeof(WCHAR));
+            for (DWORD i = 0; i < length / 2; ++i) result[i] = target[i];
+            result[length / 2] = 0;
+        }
+    }
+    HeapFree(heap, 0, data); CloseHandle(file);
+    return result;
+}
+
+static void printentry(const Entry *e, const WCHAR *parent) {
+    WCHAR *target = 0;
+    int islink = e->tag == IO_REPARSE_TAG_SYMLINK || e->tag == IO_REPARSE_TAG_MOUNT_POINT;
+    if (detailed && islink) {
+        SIZE_T p = parent ? (SIZE_T)lstrlenW(parent) : 0, n = (SIZE_T)lstrlenW(e->name);
+        WCHAR *path = allocate((p + n + 2) * sizeof(WCHAR));
+        for (SIZE_T i = 0; i < p; ++i) path[i] = parent[i];
+        if (p && path[p - 1] != L'\\' && path[p - 1] != L'/') path[p++] = L'\\';
+        for (SIZE_T i = 0; i <= n; ++i) path[p + i] = e->name[i];
+        target = linktarget(path); HeapFree(heap, 0, path);
+    }
     if (detailed) {
         SYSTEMTIME st;
         FILETIME local;
         int isdir = (e->attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-        put(isdir ? 'd' : '-');
+        put(islink ? 'l' : isdir ? 'd' : '-');
         for (int i = 0; i < 3; ++i) {
             put('r'); put(e->attributes & FILE_ATTRIBUTE_READONLY ? '-' : 'w');
             put(isdir ? 'x' : '-');
         }
-        text(" 1 - - "); number(e->size, 10); put(' ');
+        text(" 1 - - ");
+        number(target ? (ULONGLONG)WideCharToMultiByte(CP_UTF8, 0, target, lstrlenW(target), 0, 0, 0, 0) : e->size, 10); put(' ');
         if (FileTimeToLocalFileTime(&e->modified, &local) && FileTimeToSystemTime(&local, &st)) {
             number(st.wYear, 4); put('-'); put((char)('0' + st.wMonth / 10)); number(st.wMonth % 10, 0);
             put('-'); put((char)('0' + st.wDay / 10)); number(st.wDay % 10, 0); put(' ');
@@ -61,13 +107,16 @@ static void printentry(const Entry *e) {
         } else text("????-??-?? ??:??");
         put(' ');
     }
-    wide(e->name); put('\n');
+    wide(e->name);
+    if (target) { text(" -> "); wide(target); HeapFree(heap, 0, target); }
+    put('\n');
 }
 
 static Entry *entry(const WIN32_FIND_DATAW *data, const WCHAR *name) {
     SIZE_T length = (SIZE_T)lstrlenW(name);
     Entry *e = allocate((SIZE_T)FIELD_OFFSET(Entry, name) + (length + 1) * sizeof(WCHAR));
     e->next = 0; e->attributes = data->dwFileAttributes;
+    e->tag = data->dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT ? data->dwReserved0 : 0;
     e->modified.dwLowDateTime = data->ftLastWriteTime.dwLowDateTime;
     e->modified.dwHighDateTime = data->ftLastWriteTime.dwHighDateTime;
     e->size = ((ULONGLONG)data->nFileSizeHigh << 32) | data->nFileSizeLow;
@@ -83,14 +132,20 @@ static void list(const WCHAR *path, int heading) {
     WCHAR *pattern;
     SIZE_T length;
     if (attr == INVALID_FILE_ATTRIBUTES) { error(path, GetLastError()); return; }
-    if (directory || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+    data.dwReserved0 = 0;
+    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
+        search = FindFirstFileW(path, &data);
+        if (search != INVALID_HANDLE_VALUE) FindClose(search);
+    }
+    if (directory || !(attr & FILE_ATTRIBUTE_DIRECTORY) ||
+        (detailed && (data.dwReserved0 == IO_REPARSE_TAG_SYMLINK || data.dwReserved0 == IO_REPARSE_TAG_MOUNT_POINT))) {
         WIN32_FILE_ATTRIBUTE_DATA info;
         if (!GetFileAttributesExW(path, GetFileExInfoStandard, &info)) { error(path, GetLastError()); return; }
         data.dwFileAttributes = info.dwFileAttributes;
         data.ftLastWriteTime.dwLowDateTime = info.ftLastWriteTime.dwLowDateTime;
         data.ftLastWriteTime.dwHighDateTime = info.ftLastWriteTime.dwHighDateTime;
         data.nFileSizeHigh = info.nFileSizeHigh; data.nFileSizeLow = info.nFileSizeLow;
-        head = entry(&data, path); printentry(head); HeapFree(heap, 0, head); return;
+        head = entry(&data, path); printentry(head, 0); HeapFree(heap, 0, head); return;
     }
     if (heading) { wide(path); text(":\n"); }
     length = (SIZE_T)lstrlenW(path);
@@ -108,13 +163,13 @@ static void list(const WCHAR *path, int heading) {
         if (!all && dot) continue;
         if (!all && !almost && (name[0] == L'.' || (data.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN))) continue;
         e = entry(&data, name);
-        if (unsorted) { printentry(e); HeapFree(heap, 0, e); }
+        if (unsorted) { printentry(e, path); HeapFree(heap, 0, e); }
         else { if (tail) tail->next = e; else head = e; tail = e; }
     } while (FindNextFileW(search, &data));
     code = GetLastError(); FindClose(search);
     if (code != ERROR_NO_MORE_FILES) error(path, code);
     head = sort(head);
-    while (head) { Entry *next = head->next; printentry(head); HeapFree(heap, 0, head); head = next; }
+    while (head) { Entry *next = head->next; printentry(head, path); HeapFree(heap, 0, head); head = next; }
     /* Re-enumerate after freeing the sorted listing, retaining no ancestor lists. */
     if (recursive) {
         length = (SIZE_T)lstrlenW(path);

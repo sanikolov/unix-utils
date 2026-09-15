@@ -89,6 +89,11 @@ The last of `-t`, `-S`, and `-U` wins. Sorting defaults to case-sensitive ordina
 name order, with names breaking time/size ties. Each directory is sorted
 independently; operands retain command-line order.
 
+Long listings mark symbolic links and directory junctions with `l` and show
+`name -> target`, including dangling links. The size is the target text's UTF-8
+byte length. With `-l` or `-d`, directory link operands are listed themselves;
+otherwise their contents are listed. Recursive traversal skips directory links.
+
 ## Size and memory
 
 The build optimizes for size with link-time optimization and dead-code folding.

@@ -66,7 +66,48 @@ try {
     try {
         $r = Invoke-Ls '-RA'
         Assert ($r.Code -eq 0 -and $r.Text -notmatch 'loop:') 'Recursion followed a junction'
+        $r = Invoke-Ls '-l sub'
+        Assert ($r.Code -eq 0 -and $r.Text -match '(?m)^l.* loop -> ') 'Junction target missing from directory listing'
+        $r = Invoke-Ls '-l sub\loop'
+        Assert ($r.Code -eq 0 -and $r.Text -match '(?m)^l.* sub\\loop -> ' -and $r.Text -notmatch 'alpha') 'Long listing followed junction operand'
     } finally { Remove-Item -LiteralPath $junction -Force }
+    Add-Type @'
+using System.Runtime.InteropServices;
+public static class LsTestLinks {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static extern bool CreateSymbolicLink(string link, string target, uint flags);
+}
+'@
+    $links = @(
+        @('file-link', 'alpha', 0),
+        @('dir-link', 'sub', 1),
+        @('broken-link', 'missing-target', 0),
+        @('broken-dir-link', 'missing-dir', 1)
+    )
+    $createdLinks = @()
+    try {
+        foreach ($link in $links) {
+            $linkPath = Join-Path $fixture $link[0]
+            $ok = [LsTestLinks]::CreateSymbolicLink($linkPath, $link[1], ([uint32]$link[2] -bor 2))
+            if (-not $ok) { $ok = [LsTestLinks]::CreateSymbolicLink($linkPath, $link[1], [uint32]$link[2]) }
+            if (-not $ok) { throw "Cannot create symlink fixture: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+            $createdLinks += $linkPath
+            $r = Invoke-Ls ('-l ' + $link[0])
+            Assert ($r.Code -eq 0 -and $r.Text -match ('(?m)^l.* ' + $link[0] + ' -> ' + $link[1] + '$')) "Symlink operand failed: $($link[0])"
+            Assert ((Invoke-Ls ('-d ' + $link[0])).Text -eq ($link[0] + "`n")) 'Plain listing annotated link'
+        }
+        foreach ($option in '-l', '-lU', '-lR') {
+            $r = Invoke-Ls $option
+            foreach ($link in $links) {
+                Assert ($r.Code -eq 0 -and $r.Text -match ('(?m)^l.* ' + $link[0] + ' -> ' + $link[1] + '$')) "Symlink listing failed: $option $($link[0])"
+            }
+            Assert ($r.Text -notmatch 'dir-link:') 'Recursive listing followed directory symlink'
+        }
+        Assert ((Invoke-Ls 'dir-link').Text -match '(?m)^nested$') 'Plain directory link operand should list contents'
+    } finally {
+        foreach ($linkPath in $createdLinks) { Remove-Item -LiteralPath $linkPath -Force }
+    }
     [IO.File]::WriteAllText((Join-Path $fixture '-dash'), '')
     Assert ((Invoke-Ls '-- -dash').Text -eq "-dash`n") '-- failed'
     $unicodeName = 'space ' + [char]0x03bb + '.txt'
